@@ -1,0 +1,422 @@
+---
+title: "Untitled"
+author: "zhuoran zhang"
+date: "2020/8/20"
+output: html_document
+---
+
+
+```{r}
+adni <- read.csv(file="C:/Users/ucizz/Onedrive/Desktop/research/paper 2/paper 2 reference/ADNI1_Final_Clean.csv")
+brain <- read.csv(file="C:/Users/ucizz/Onedrive/Desktop/research/paper 2/paper 2 reference/adniJointLabelFusionMeasurements.csv")
+
+adni_id <- read.csv(file="C:/Users/ucizz/OneDrive/Desktop/research/paper 2/ADNI_ID_updated_090120.csv")
+
+adni_sub <- adni[adni$IMAGE_ID %in% brain$Image.ID,]
+adni_sub <- adni_sub[order(adni_sub$IMAGE_ID),]
+brain <- brain[order(brain$Image.ID),]
+
+
+
+
+
+merged <- cbind(adni_sub,brain[,3:dim(brain)[2]])
+merged <- merged[order(merged$RID),]
+
+
+baseline <- merged[merged$VISIT=="sc",]
+
+
+
+
+### Clean data
+
+baseline=baseline[,c(3,6,7:13,18:27,41:50)]
+baseline=na.omit(baseline)
+
+### Extract edu year
+adni_id_sub <- adni_id[adni_id$RID %in% baseline$RID,]
+adni_id_sub <- adni_id_sub[order(adni_id_sub$RID),]
+adni_id_sub <- na.omit(adni_id_sub)
+edu_year <- unlist(lapply(split(adni_id_sub$PTEDUCAT,adni_id_sub$RID),unique))
+
+baseline <- baseline[order(baseline$RID),]
+
+
+baseline$GENDER= (baseline$GENDER=="M")*1
+baseline$edu <- edu_year
+baseline$MCI <- (baseline$DIAGNOSIS=="MCI")*1
+baseline$AD <- (baseline$DIAGNOSIS=="AD")*1
+
+baseline <- baseline[,-4]
+
+```
+
+
+
+
+```{r}
+weight_ridge <- function(data,weights,sigma2){
+### OLS estimate alpha
+  x <- data[,c(2:17,19:31)]
+  X_mat <- as.matrix( cbind(rep(1,dim(x)[1]),x) )
+  y <- data[,18]
+  W <- diag(as.vector(t(weights)))
+  
+  P <- eigen(t(X_mat)%*%W%*%X_mat)$vectors #### P eigenvectors  t(P) in latex document= P here
+  X <- X_mat%*%(P)
+  alpha_hat <- diag( (1/diag(t(X)%*%W%*%X))) %*%t(X)%*%W%*%y
+  delta= eigen(t(X_mat)%*%W%*%X_mat)$values*alpha_hat^2/sigma2
+  K <- nrow(x)*diag( as.vector( rep(sigma2,dim(alpha_hat)[1])/alpha_hat^2))*diag(t(X)%*%W^2%*%X)/diag(t(X)%*%W%*%X) 
+  alpha_history <-c((P)%*%alpha_hat)
+  alpha_temp <-c()
+  i=0
+  while( sum(abs(alpha_hat-alpha_temp)<rep(0.005,length(alpha_hat)))<length(alpha_hat) ){
+    
+    K <- 1/nrow(x)*diag( as.vector( rep(sigma2,dim(alpha_hat)[1])/alpha_hat^2)*diag(t(X)%*%W^2%*%X)/diag(t(X)%*%W%*%X)  )
+    if(sum(abs(alpha_hat)<1e-5)>0 ){
+      alpha_hat[abs(alpha_hat)<1e-5] <-0
+      K[abs(alpha_hat)<1e-5,abs(alpha_hat)<1e-5]<-Inf
+    }
+    alpha_temp <- alpha_hat
+    alpha_hat <- diag( 1/(diag(t(X)%*%W%*%X/nrow(X) +K)) )%*%t(X)%*%W%*%y/nrow(X)
+
+    ##print(alpha_hat)
+    ##print(K)
+    
+    alpha_history <- cbind(alpha_history,(P)%*%alpha_hat)
+      i=i+1
+  ##print(i)
+  }
+  return((P)%*%alpha_hat )
+
+  ##return(alpha_history)
+}
+
+
+
+
+weight_ridge0 <- function(data,sigma2){
+### OLS estimate alpha
+   x <- data[,c(2:17,19:31)]
+  X_mat <- as.matrix( cbind(rep(1,dim(x)[1]),x) )
+  y <- data[,18]
+  P <- eigen(t(X_mat)%*%X_mat)$vectors #### P eigenvectors  t(P) in latex document= P here
+  X <- X_mat%*%(P)
+  alpha_hat <- diag( (1/diag(t(X)%*%X))) %*%t(X)%*%y
+  delta= eigen(t(X_mat)%*%X_mat)$values*alpha_hat^2/sigma2
+  K <- 1/nrow(x)*diag( as.vector( rep(sigma2,dim(alpha_hat)[1])/alpha_hat^2)) 
+  alpha_history <-c((P)%*%alpha_hat)
+  alpha_temp <-c()
+  i=0
+  while( sum(abs(alpha_hat-alpha_temp)<rep(0.005,length(alpha_hat)))<length(alpha_hat) ){
+    
+    K <- 1/nrow(x)*diag( as.vector( rep(sigma2,dim(alpha_hat)[1])/alpha_hat^2))
+    if(sum(abs(alpha_hat)<1e-5)>0 ){
+      alpha_hat[abs(alpha_hat)<1e-5] <-0
+      K[abs(alpha_hat)<1e-5,abs(alpha_hat)<1e-5]<-Inf
+    }
+    alpha_temp <- alpha_hat
+    alpha_hat <- diag( (1/(diag(t(X)%*%X/nrow(X) +K))) )%*%t(X)%*%y/nrow(X)
+
+    ##print(alpha_hat)
+    ##print(K)
+    
+    alpha_history <- cbind(alpha_history,(P)%*%alpha_hat)
+      i=i+1
+  ##print(i)
+  }
+  return((P)%*%alpha_hat)
+
+  ##return(alpha_history)
+}
+
+
+
+```
+
+
+```{r}
+#set.seed(11172020)
+set.seed(20240601)
+library(glmnet)
+test_id <- sample(baseline$RID,0.1*length(baseline$RID))
+train_id <- setdiff(baseline$RID,test_id)
+
+test <- baseline[baseline$RID %in% test_id,]
+train <- baseline[baseline$RID %in% train_id,]
+
+sampling_model <-rep(0.2,length(train$AD)) + 1.4*train$AD - 0.01*train$AGE
+  
+expit <- function(x){
+  return(exp(x)/(1+exp(x)))
+}
+
+sampling_p <- apply(as.matrix(sampling_model),2,expit)
+
+Ind <- function(x){
+  return(sample(c(0,1),1,prob=c(1-x,x)))
+}
+
+sampling_index <- apply(sampling_p,1,Ind)
+
+train$sample <- sampling_index
+train$p_known <- sampling_p
+test$sample <- rep(0,dim(test)[1])
+test$p_known <- rep(0,dim(test)[1])
+
+#### Generate biased sample
+biased_sample <- train[train$sample==1,]
+
+
+
+X=as.matrix( biased_sample[,c(2:17,19:31)])
+Y=biased_sample$MMSCORE
+
+
+collected <-rbind(biased_sample,test)
+
+model_p <- glm(sample~AD+AGE,data=collected,family="binomial")
+p_complete <- as.vector(exp(model.matrix(model_p)%*%
+                                   coefficients(model_p)) )[1:dim(biased_sample)[1]]
+p_complete <- p_complete/sum(p_complete)
+
+
+
+### Ridge
+wr1 <- glmnet(X,Y,alpha=0,family="gaussian",measure="response",weights=1/biased_sample$p_known)
+
+wpre1 <-predict(wr1,newx=as.matrix(test[,c(2:17,19:31)],type="response") )
+
+mse_wridge <-min( apply ((matrix(rep(test$MMSCORE,2),dim(test)[1],100)-wpre1)^2 , 2,sum)    /dim(test)[1])
+
+
+#### Weighted least square
+
+lm0 <- lm(MMSCORE~.,weights=1/biased_sample$p_known,data=biased_sample[,c(2:31)])
+wpre2 <-as.matrix(cbind(rep(1,dim(test)[1]),test[,c(2:17,19:31)]) )%*%coefficients(lm0)
+mse_wls <- sum((test$MMSCORE-wpre2)^2)/dim(test)[1]
+
+
+sigma <- sum( residuals(lm0)^2  )/(dim(biased_sample)[1]-dim(biased_sample)[2])
+
+
+### GWRR with p_known
+weight_known <- 1/biased_sample$p_known
+weight_known = weight_known/sum(weight_known)
+wr0 <- weight_ridge(biased_sample,1/biased_sample$p_known,sigma)
+
+wpre0 <-as.matrix(cbind(rep(1,dim(test)[1]),test[,c(2:17,19:31)]) )%*%wr0
+
+mse_GWRR <-sum((test$MMSCORE-wpre0)^2)/dim(test)[1]
+
+
+#### generalized ridge
+wr00 <- weight_ridge0(biased_sample,sigma)
+
+wpre00 <-as.matrix(cbind(rep(1,dim(test)[1]),test[,c(2:17,19:31)]) )%*%wr00
+
+mse_GWRR0 <-sum((test$MMSCORE-wpre00)^2)/dim(test)[1]
+
+
+
+##### Unadjusted
+#wr_unadjusted <- weight_ridge_unadjusted(biased_sample,1/biased_sample$p_known,sigma)
+
+#wpre_unadjusted <-as.matrix(cbind(rep(1,dim(test)[1]),test[,c(2:17,19:31)]) )%*%wr_unadjusted
+#mse_GWRR_unadjusted <- sum((test$MMSCORE-wpre_unadjusted)^2)/dim(test)[1]
+
+
+
+ridge <- cv.glmnet(x=X,y=Y,alpha=0,measure="response")
+pre_ridge <- predict(ridge,newx=as.matrix(test[,c(2:17,19:31)]),s=ridge$lambda.min)
+mse_ridge <- sum((test$MMSCORE-pre_ridge)^2)/dim(test)[1]
+
+```
+
+
+```{r}
+### GWRR with p_complete
+wr0 <- weight_ridge(biased_sample,1/p_complete,sigma)
+
+wpre0 <-as.matrix(cbind(rep(1,dim(test)[1]),test[,c(2:17,19:31)]) )%*%wr0
+
+mse_GWRR <-sum((test$MMSCORE-wpre0)^2)/dim(test)[1]
+
+
+### Ridge
+wr1 <- glmnet(X,Y,alpha=0,family="gaussian",measure="response",weights=1/p_complete)
+
+wpre1 <-predict(wr1,newx=as.matrix(test[,c(2:17,19:31)],type="response") )
+
+mse_wridge <-min( apply ((matrix(rep(test$MMSCORE,2),dim(test)[1],100)-wpre1)^2 , 2,sum)    /dim(test)[1])
+
+lm0 <- lm(MMSCORE~.,weights=1/p_complete,data=biased_sample[,c(2:31)])
+wpre2 <-as.matrix(cbind(rep(1,dim(test)[1]),test[,c(2:17,19:31)]) )%*%coefficients(lm0)
+mse_wls <- sum((test$MMSCORE-wpre2)^2)/dim(test)[1]
+
+
+```
+
+
+
+
+```{r}
+sum(baseline$MCI)
+sum(baseline$AD)
+sum(baseline$GENDER)
+```
+
+
+```{r}
+library(xtable)
+ridge_cv <- cv.glmnet(X,Y,alpha=0,family="gaussian",measure="response",weights=1/biased_sample$p_known)
+xtable(as.matrix( round(cbind(coef(lm0),coef(ridge_cv),wr0),3)))
+```
+
+
+```{r}
+library(reshape2)
+library(ggplot2)
+get_upper_tri <- function(cormat){
+    cormat[lower.tri(cormat)]<- NA
+    return(cormat)
+  }
+
+cormat <- get_upper_tri( round(cor(collected[,2:30]),2) )
+ggplot(data = melt(cormat,na.rm = TRUE), aes(Var2, Var1, fill = value))+
+ geom_tile(color = "white")+
+ scale_fill_gradient2(low = "blue", high = "red", mid = "white", 
+   midpoint = 0, limit = c(-1,1), space = "Lab", 
+   name="Pearson\nCorrelation") +
+  theme_minimal()+ 
+ theme(axis.text.x = element_text(angle = 45, vjust = 1, 
+    size = 12, hjust = 1))+
+ coord_fixed()
+```
+
+
+```{r}
+library(ggplot2)
+#### Age histogram
+names(biased_sample)[2]="Age"
+names(test)[2]="Age"
+ggplot() + 
+  geom_bar(aes(x=Age, y=(..count..), fill="Biased Sample"),  data=biased_sample, stat = "bin",binwidth = 2) +
+  geom_bar(aes(x=Age,y=(..count..), fill="Test"),  data=test, stat = "bin",binwidth = 2) +
+ylab("Count") + theme(plot.title = element_text(hjust=0.5))
+```
+
+
+
+```{r}
+### MCI histogram
+MCI_prop <- data.frame("Cognitive Status"=c("MCI","Not MCI"), "Biased Sample"=c(sum(biased_sample$MCI)/length(biased_sample$MCI),
+      1- sum(biased_sample$MCI)/length(biased_sample$MCI) ), 
+"Test"=c(sum(test$MCI)/length(test$MCI),
+      1-sum(test$MCI)/length(test$MCI)) )
+
+MCI_prop <- melt(MCI_prop)
+names(MCI_prop)[3] <- "Proportion"
+names(MCI_prop)[1] <- "Cognitive_Status"
+ggplot(MCI_prop, aes(x = Cognitive_Status, y= Proportion, fill = variable)) +
+   geom_bar(stat="identity", width=.5, position = "dodge")+ xlab("Cognitive Status")
+```
+
+
+```{r}
+### AD histogram
+ad_prop <- data.frame("Cognitive Status"=c("AD","Not AD"), "Biased Sample"=c(sum(biased_sample$AD)/length(biased_sample$AD),
+      1- sum(biased_sample$AD)/length(biased_sample$AD) ), 
+"Test"=c(sum(test$AD)/length(test$AD),
+      1-sum(test$AD)/length(test$AD)) )
+
+ad_prop <- melt(ad_prop)
+names(ad_prop)[3] <- "Proportion"
+
+ggplot(ad_prop, aes(x = Cognitive.Status, y= Proportion, fill = variable)) +
+   geom_bar(stat="identity", width=.5, position = "dodge")  + xlab("Cognitive Status")
+```
+
+
+```{r}
+### Gender histogram
+
+gender_prop <- data.frame("Gender"=c("Male","Female"), "Biased Sample"=c(sum(biased_sample$GENDER)/length(biased_sample$GENDER),
+      1- sum(biased_sample$GENDER)/length(biased_sample$GENDER) ), 
+"Test"=c(sum(test$GENDER)/length(test$GENDER),
+      1-sum(test$GENDER)/length(test$GENDER)) )
+
+gender_prop <- melt(gender_prop)
+names(gender_prop)[3] <- "Proportion"
+
+ggplot(gender_prop, aes(x = Gender, y= Proportion, fill = variable), xlab="Sex") +
+   geom_bar(stat="identity", width=.5, position = "dodge")
+```
+
+
+```{r}
+weights=1/biased_sample$p_known
+data=biased_sample
+sigma2=3
+
+x <- data[,c(2:17,19:31)]
+X_mat <- as.matrix( cbind(rep(1,dim(x)[1]),x) )
+y <- data[,18]
+W <- diag(as.vector(weights))
+P <- eigen(t(X_mat)%*%W%*%X_mat)$vectors #### P eigenvectors  t(P) in latex document= P here
+X <- X_mat%*%(P)
+alpha_hat <- diag( (1/diag(t(X)%*%W%*%X))) %*%t(X)%*%W%*%y
+delta= eigen(t(X_mat)%*%W%*%X_mat)$values*alpha_hat^2/sigma2
+K <- diag( as.vector( rep(sigma2,dim(alpha_hat)[1])/alpha_hat^2))*diag(t(X)%*%W^2%*%X)/diag(t(X)%*%W%*%X)
+(diag(t(X)%*%W^2%*%X)/diag(t(X)%*%W%*%X) )/mean(diag(t(X)%*%W^2%*%X)/diag(t(X)%*%W%*%X))
+```
+
+
+```{r}
+weights=1/p_complete
+data=biased_sample
+sigma2=3
+
+x <- data[,c(2:17,19:31)]
+X_mat <- as.matrix( cbind(rep(1,dim(x)[1]),x) )
+y <- data[,18]
+W <- diag(as.vector(weights))
+P <- eigen(t(X_mat)%*%W%*%X_mat)$vectors #### P eigenvectors  t(P) in latex document= P here
+X <- X_mat%*%(P)
+alpha_hat <- diag( (1/diag(t(X)%*%W%*%X))) %*%t(X)%*%W%*%y
+delta= eigen(t(X_mat)%*%W%*%X_mat)$values*alpha_hat^2/sigma2
+K <- diag( as.vector( rep(sigma2,dim(alpha_hat)[1])/alpha_hat^2))*diag(t(X)%*%W^2%*%X)/diag(t(X)%*%W%*%X)
+(diag(t(X)%*%W^2%*%X)/diag(t(X)%*%W%*%X) )/mean(diag(t(X)%*%W^2%*%X)/diag(t(X)%*%W%*%X))
+```
+
+
+```{r}
+library(glmnet)
+set.seed(20200909)
+test_id <- sample(baseline$RID,0.2*length(baseline$RID))
+train_id <- setdiff(baseline$RID,test_id)
+
+
+
+test <- baseline[baseline$RID %in% test_id,]
+train <- baseline[baseline$RID %in% train_id,]
+
+X=as.matrix( train[,-c(1,18)])
+Y=train$MMSCORE
+
+ridge <- cv.glmnet(x=X,y=Y,alpha=0,measure="response")
+pre_ridge <- predict(ridge,newx=as.matrix(test[,-c(1,18)]),s=ridge$lambda.min)
+mse_ridge <- sum((test$MMSCORE-pre_ridge)^2)/dim(test)[1]
+
+
+ols <- lm(MMSCORE~., data=train[,c(2:31)])
+pre_ols <- as.matrix(cbind(rep(1,dim(test)[1]),test[,c(2:17,19:31)]) )%*%coefficients(ols)
+
+
+mse_ols <- sum((test$MMSCORE-pre_ols)^2)/dim(test)[1]
+```
+
+
+
+

@@ -1,0 +1,324 @@
+---
+title: "Influence function"
+output: html_document
+date: "2024-04-19"
+---
+
+
+```{r}
+library(MASS)
+
+
+simulate <- function(n,x1,x2,x39,x1016){
+  #beta=c(12,-5,12,-7,-5)
+  #beta=c(1,2,2,4,1)
+beta=c(1,2,2,0,2)
+#x1 <- runif(n,0,1)
+
+#x2 <- 2*x1+rnorm(n,0,0.5)
+x1=x1
+x2=x2
+#x1 = rep(0.5,100)
+#x2 <- 2*x1
+
+##X12 <- mvrnorm(n,c(2,4),matrix(c(1,0.9,0.9,1),2,2))
+##  x1 <- X12[,1]
+##  x2 <- X12[,2]
+#beta_remain <- c(1,3,0,2,7,2,4,0,0,1,3,4,-5,0,2,2,0,0,8,1,0,1,3,3,5,-4,3,0,0,2)
+beta_remain <- rep(1,12)
+Sigma <- matrix(0.2,6,6)
+diag(Sigma) <- rep(0.3,6)
+X39 <-x39
+X1016 <-x1016
+#X1723 <-0.1* mvrnorm(n,c(1,1,1,1,1,1),Sigma)
+#X2430 <-0.1* mvrnorm(n,c(1,1,1,1,1,1),Sigma)
+#X3137 <-0.1* mvrnorm(n,c(1,1,1,1,1,1),Sigma)
+#X_remain <- cbind(X39,X1016,X1723,X2430,X3137)
+X_remain <- cbind(X39,X1016)
+##x2 <- runif(n,-3,3)
+
+#x2 <- mvrnorm(1,x1,diag(rep(1,length(x1))))
+#x5 <- x4+rep(0.5,n)
+
+Ind <- function(x){
+  return(sample(c(0,1),1,prob=c(1-x,x)))
+}
+#### Assume popu A has 250 obs
+#gamma_Ia <- c(0.7,5)
+#p_matrix_Ia <- cbind(rep(1,n),x1)
+#epsilon1 <- rnorm(n,0,0.01)
+#mean_Ia <- p_matrix_Ia%*%gamma_Ia+ epsilon1
+#p_sample_Ia <- exp(mean_Ia)/(1+exp(mean_Ia))
+#Ia <- apply(p_sample_Ia,1,Ind)
+
+
+Ia <- c(rep(1,n/2),rep(0,n/2))
+beta <- c(beta,beta_remain)
+x_matrix <- cbind(rep(1,n),x1,x2,Ia,Ia*x1,X_remain)
+
+epsilon <- rnorm(n,0,1 )
+y <- x_matrix%*%beta + epsilon
+
+data <- cbind(y,x1,x2,Ia,Ia*x1,X_remain)
+
+################## Biased
+#gamma <- c(0,-1,2)
+gamma <- c(0,-1,2)
+p_matrix <- cbind(rep(1,n),x1,Ia)
+
+################### Constant
+#gamma <- c(0.7)
+#p_matrix <- cbind(rep(1,n))
+
+epsilon1 <- rnorm(n,0,0.05)
+mean <- p_matrix%*%gamma+ epsilon1
+p_sample <- exp(mean)/(1+exp(mean))
+
+I_sample <- apply(p_sample,1,Ind)
+
+sim_data <- as.data.frame(cbind(data,I_sample,p_sample))
+names(sim_data)[c(1:5,18,19)]=c("y","x1","x2", "Ia","Ia*x1", "I_sample","p_sample")
+return(sim_data)
+}
+
+```
+
+
+```{r}
+inf.fun <- function(fit) {
+  
+  dm <- model.matrix(fit)
+  Ihat <- (t(dm) %*% (dm * fit$fitted.values * (1 - fit$fitted.values))) / nrow(dm)
+  ## influence function
+  infl <- (dm * resid(fit, type = "response")) %*% solve(Ihat)
+  return(infl)
+}
+```
+
+
+```{r}
+############## Updated 2024-04-22
+IF_GWRR <- function(i, dm, y, beta, W,K, fit_log, inf_log){
+  
+  ########## Influence function of the ith observation
+  #Ihat <- t(dm)%*%W%*%dm/nrow(dm) + K/nrow(dm)
+  Ihat <- t(dm)%*%W%*%dm/nrow(dm) + K
+  res <-  dm%*%beta-y
+  
+  term1 <- as.numeric((y[i]-dm[i,]%*%beta)*W[i,i])*as.matrix(dm[i,])
+  term2_W_beta <- diag(1,nrow(dm))
+  term2_beta_ep <- inf_log[i,]
+  for(j in 1: nrow(dm)){
+
+    term2_W_beta[j,j] <- -W[j,j]*t(model.matrix(fit_log)[j,]) %*% term2_beta_ep
+  }
+  term3_bias <- res
+  ################ Newly added
+  return(solve(Ihat)%*%(term1 + t(dm)%*%W%*%res/nrow(dm) - t(dm)%*%term2_W_beta%*%res/nrow(dm) )  )
+}
+
+########################################################
+       
+```
+
+
+
+
+```{r}
+library(MASS)
+
+ #################### PI sqrt(sigma^2 hat + variance hat of Xbeta )
+##################### Convergae
+###### 1. for each of the simulation compute a PI
+###### 2. generate 100 new Y with the same X basis of the test sample 
+###### 3. Compute converage 95%
+
+
+#set.seed(20201104)
+#set.seed(20240420)
+#set.seed(20240509)
+set.seed(20240717)
+epoch=1000
+
+
+beta_GWRR <- c()
+var_IF_GWRR_sum <- matrix(0,15,15)
+var_WLS_extended <- matrix(0,15,15)
+#K= diag(c(0,1,1,rep(2,12)) )
+#K = diag(rep(0.2,15))
+#K= diag(c(0.1,0.1,0.2,rep(1,12)) )
+K= diag(c(0.001,0.001,0.001,rep(0.01,12)) )/3
+beta_log <- c()
+var_log <- matrix(0,3,3)
+sample_size <-c()
+
+converage <- 0
+converage_GRR <-0
+N=150
+n=30
+################### Covariate value
+x1_biased <- runif(N,0,1)
+
+x2_biased <- 2*x1_biased+rnorm(N,0,0.5)
+
+Sigma <- matrix(0.2,6,6)
+diag(Sigma) <- rep(0.3,6)
+x39_biased <-0.1* mvrnorm(N,c(1,1,1,1,1,1),Sigma)
+x1016_biased <-0.1* mvrnorm(N,c(1,1,1,1,1,1),Sigma)
+x1_SRS <- runif(n,0,1)
+
+x2_SRS <- 2*x1_SRS+rnorm(n,0,0.5)
+x39_SRS <-0.1* mvrnorm(n,c(1,1,1,1,1,1),Sigma)
+x1016_SRS <-0.1* mvrnorm(n,c(1,1,1,1,1,1),Sigma)
+
+#############################################
+
+sim_data <- simulate(N,x1_biased,x2_biased,x39_biased,x1016_biased)
+biased_sample <- sim_data[which(sim_data$I_sample==1),]
+nrow(biased_sample)
+var(biased_sample$y)
+###########################
+test_srs <- simulate(n,x1_SRS,x2_SRS,x39_SRS,x1016_SRS)
+test_srs$I_sample=0
+
+
+collected <- rbind(biased_sample,test_srs)
+Nob=dim(biased_sample)[1]
+sample_size <- c(sample_size,Nob)
+
+##### Estimate sampling prob
+model_p <- glm(I_sample~x1+Ia,data=collected,family="binomial")
+
+inf.fun(model_p)[1:100]
+
+for(i in 1:epoch){
+
+#####################
+sim_data <- simulate(N,x1_biased,x2_biased,x39_biased,x1016_biased)
+biased_sample <- sim_data[which(sim_data$I_sample==1),]
+nrow(biased_sample)
+var(biased_sample$y)
+###########################
+test_srs <- simulate(n,x1_SRS,x2_SRS,x39_SRS,x1016_SRS)
+test_srs$I_sample=0
+
+
+collected <- rbind(biased_sample,test_srs)
+Nob=dim(biased_sample)[1]
+sample_size <- c(sample_size,Nob)
+
+##### Estimate sampling prob
+model_p <- glm(I_sample~x1+Ia,data=collected,family="binomial")
+
+beta_log <- cbind(beta_log, model_p$coefficients)
+
+p_complete <- as.vector(exp(model.matrix(model_p)%*%coefficients(model_p)))[1:dim(biased_sample)[1]]
+
+
+weight_complete <- 1/p_complete
+weight_complete <- weight_complete/sum(weight_complete)
+
+#lm1 <- lm(y~.,weights=weight_complete,data=biased_sample[,c(1:3,6: (dim(biased_sample)[2]-2)  )])
+#sum( residuals(lm1)^2  )/(dim(biased_sample)[1]-15)
+
+###########################################################################################
+######## GWRR
+###########################################################################################
+
+
+
+dm=as.matrix(cbind(rep(1,nrow(biased_sample)),biased_sample[,c(2,3,6: (dim(biased_sample)[2]-2)  )]) )
+#dm=as.matrix(cbind(rep(1,nrow(biased_sample)),biased_sample[,c(2: (dim(biased_sample)[2]-2)  )]) )
+y=biased_sample[,1]
+K=K
+W = diag(weight_complete)
+
+#Ihat <- t(dm)%*%W%*%dm + K
+
+#GWRR_complete <- solve(Ihat)%*%t(dm)%*%W%*%y
+
+Ihat <- t(dm)%*%W%*%dm/nrow(dm) + K
+
+GWRR_complete <- solve(Ihat)%*%t(dm)%*%W%*%y/nrow(dm)
+
+beta_GWRR <- cbind(beta_GWRR,GWRR_complete)
+
+inf_log <- inf.fun(model_p)
+  
+var_IF_GWRR <- matrix(0,(dim(dm)[2]),(dim(dm)[2]))
+
+for(n_row in 1: nrow(biased_sample)){
+  
+ if_gwrr <- IF_GWRR(n_row, dm=as.matrix(cbind(rep(1,nrow(biased_sample)),biased_sample[,c(2:3,6: (dim(biased_sample)[2]-2)  )]) ),
+        y=biased_sample[,1],
+        beta= GWRR_complete,
+        W = diag(weight_complete),
+        K = K,
+        fit_log = model_p,
+        inf_log <- inf_log)
+ var_IF_GWRR <- var_IF_GWRR + if_gwrr%*%t(if_gwrr)
+}
+var_IF_GWRR_sum <- var_IF_GWRR_sum + var_IF_GWRR/nrow(biased_sample)^2
+
+###################### Generate Y new
+sigma1=1
+x1=0.5
+x2=1
+Ia=0
+x_matrix <-   c(1,x1,x2,Ia,Ia*x1,rep(0.1,12)) 
+#beta=c(1,2,2,4,1,rep(1,12))
+beta=c(1,2,2,0,2,rep(1,12))
+#beta=c(1,3,3,1,1,rep(1,12))
+#beta=GWRR_complete
+epsilon <- rnorm(100,0,sqrt(sigma1))
+y_new <- sum(x_matrix * beta) + epsilon
+x <- as.matrix(c(1,x1,x2,rep(0.1,12)) )
+y_hat <- t(x)%*%GWRR_complete
+
+###################### 95% Prediction interval of GWRR
+PI_low <- as.numeric(y_hat - 1.96*sqrt(sigma1+t(x)%*%(var_IF_GWRR/nrow(biased_sample)^2)%*%x ))
+PI_high <- as.numeric(y_hat + 1.96*sqrt(sigma1+t(x)%*%(var_IF_GWRR/nrow(biased_sample)^2)%*%x ))
+converage <- converage + mean((y_new>PI_low)*(y_new<PI_high))
+###################### 95% Prediction interval of GRR
+X = dm
+W =  diag(weight_complete)
+
+
+y_hat_GRR <- t(x)%*%solve(t(X)%*%X+K)%*%t(X)%*%y
+var_GRR <- solve(t(X)%*%X+ K)%*%t(X)%*%X%*%solve(t(X)%*%X+ K)*1
+PI_low_GRR <- as.numeric(y_hat_GRR - 1.96*sqrt(sigma1+t(x)%*%(var_GRR/nrow(biased_sample))%*%x ))
+PI_high_GRR <- as.numeric(y_hat_GRR + 1.96*sqrt(sigma1+t(x)%*%(var_GRR/nrow(biased_sample))%*%x ))
+converage_GRR <- converage_GRR + mean((y_new>PI_low_GRR)*(y_new<PI_high_GRR))
+
+###################### WLS extended
+                                                               
+
+
+#var_WLS_extended <- var_WLS_extended + solve(t(X)%*%W%*%X/nrow(dm)+ K/nrow(dm))%*%t(X)%*%W%*%W%*%X%*%solve(t(X)%*%W%*%X/nrow(dm)+ K/nrow(dm))*1/nrow(dm)^2
+var_WLS_extended <- var_WLS_extended + solve(t(X)%*%W%*%X/nrow(dm)+ K)%*%t(X)%*%W%*%W%*%X%*%solve(t(X)%*%W%*%X/nrow(dm)+ K)*1/nrow(dm)^2
+print(i)
+
+}
+
+weighted_var <- function(x){
+  mean_beta <- mean(x)
+  return(sum(  sample_size*(x-mean_beta)^2 )/epoch)
+}
+
+
+converage/epoch
+converage_GRR/epoch
+a1=round(diag(var_IF_GWRR_sum)/(epoch),3)
+a2=round(diag(var_WLS_extended)/epoch,3)
+a3= round( diag(var(t(beta_GWRR))),3 )
+#a3=round( apply(beta_GWRR, 1,weighted_var  )   ,3)
+
+
+
+cbind(a2,a1,a3)
+#
+library(xtable)
+xtable(cbind(a2,a1,a3))
+
+
+```
