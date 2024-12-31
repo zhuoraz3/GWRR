@@ -1,0 +1,310 @@
+---
+title: "project 2"
+author: "zhuoran zhang"
+date: "2020/4/2"
+output: html_document
+---
+
+```{r}
+library(MASS)
+
+
+simulate <- function(n,x1,x2,x39,x1016){
+
+beta=c(1,2,2,0,2)
+beta_remain <- rep(1,12)
+Sigma <- matrix(0.2,6,6)
+diag(Sigma) <- rep(0.3,6)
+X_remain <- cbind(x39,x1016)
+
+Ind <- function(x){
+  return(sample(c(0,1),1,prob=c(1-x,x)))
+}
+
+
+Ia <- c(rep(1,n/2),rep(0,n/2))
+beta <- c(beta,beta_remain)
+x_matrix <- cbind(rep(1,n),x1,x2,Ia,Ia*x1,X_remain)
+
+epsilon <- rnorm(n,0,1 )
+y <- x_matrix%*%beta + epsilon
+
+data <- cbind(y,x1,x2,Ia,Ia*x1,X_remain)
+
+################## Biased sampling model
+gamma <- c(0,-1,2)
+p_matrix <- cbind(rep(1,n),x1,Ia)
+
+epsilon1 <- rnorm(n,0,0.05)
+mean <- p_matrix%*%gamma+ epsilon1
+p_sample <- exp(mean)/(1+exp(mean))
+
+I_sample <- apply(p_sample,1,Ind)
+
+sim_data <- as.data.frame(cbind(data,I_sample,p_sample))
+names(sim_data)[c(1:5,18,19)]=c("y","x1","x2", "Ia","Ia*x1", "I_sample","p_sample")
+return(sim_data)
+}
+
+```
+
+
+
+
+```{r}
+GWRR <- function(data,weights,sigma2){
+  x <- data[,c(2,3,6:(dim(data)[2]-2) )]
+  X_mat <- as.matrix( cbind(rep(1,dim(x)[1]),x) )
+  y <- data[,1]
+  W <- diag(weights)
+  P <- eigen(t(X_mat)%*%W%*%X_mat)$vectors #### P transpose of eigen vectors of XTWX
+  X <- X_mat%*%(P)
+  alpha_hat <- solve(t(X)%*%W%*%X/nrow(X))%*%t(X)%*%W%*%y/nrow(X)### Initialize with OLS estimate
+  delta= eigen(t(X_mat)%*%W%*%X_mat)$values*alpha_hat^2/sigma2
+  K <- 1/nrow(x)*diag( as.vector( rep(sigma2,dim(alpha_hat)[1])/alpha_hat^2))*diag(t(X)%*%W^2%*%X)/diag(t(X)%*%W%*%X) 
+  alpha_temp <-c()
+  i=0
+  while( sum(abs(alpha_hat-alpha_temp)<rep(0.005,length(alpha_hat)))<length(alpha_hat) ){
+    
+    K <- 1/nrow(x)*diag( as.vector( rep(sigma2,dim(alpha_hat)[1])/alpha_hat^2)*diag(t(X)%*%W^2%*%X)/diag(t(X)%*%W%*%X)  )
+    if(sum(abs(alpha_hat)<1e-5)>0 ){
+      alpha_hat[abs(alpha_hat)<1e-5] <-0
+      K[abs(alpha_hat)<1e-5,abs(alpha_hat)<1e-5]<-Inf
+    }
+    alpha_temp <- alpha_hat
+    alpha_hat <- diag( 1/(diag(t(X)%*%W%*%X/nrow(X) +K)) )%*%t(X)%*%W%*%y/nrow(X)
+      i=i+1
+  }
+  return((P)%*%alpha_hat)
+}
+```
+
+
+```{r}
+generalized_ridge <- function(data,sigma2){
+  x <- data[,c(2,3,6:(dim(data)[2]-2) )]
+  X_mat <- as.matrix( cbind(rep(1,dim(x)[1]),x) )
+  y <- data[,1]
+  P <- eigen(t(X_mat)%*%X_mat)$vectors #### P transpose of eigen vectors of XTWX
+  X <- X_mat%*%(P)
+  alpha_hat <- solve(t(X)%*%X)%*%t(X)%*%y ### Initialize with OLS estimate
+  delta= eigen(t(X_mat)%*%X_mat)$values*alpha_hat^2/sigma2
+  K <- 1/nrow(x)*diag( as.vector( rep(sigma2,dim(alpha_hat)[1])/alpha_hat^2)) 
+  alpha_temp <-c()
+  i=0
+  while( sum(abs(alpha_hat-alpha_temp)<rep(0.005,length(alpha_hat)))<length(alpha_hat) ){
+    
+    K <- 1/nrow(x)*diag( as.vector( rep(sigma2,dim(alpha_hat)[1])/alpha_hat^2))
+    if(sum(abs(alpha_hat)<1e-5)>0 ){
+      alpha_hat[abs(alpha_hat)<1e-5] <-0
+      K[abs(alpha_hat)<1e-5,abs(alpha_hat)<1e-5]<-Inf
+    }
+    alpha_temp <- alpha_hat
+    alpha_hat <- diag( (1/(diag(t(X)%*%X/nrow(X) +K))) )%*%t(X)%*%y/nrow(X)
+      i=i+1
+  }
+  return((P)%*%alpha_hat)
+}
+```
+
+```{r}
+library(glmnet)
+set.seed(20240717)
+
+epoch=1000
+mse_wridge_known <- 0
+mse_wridge_complete <- 0
+mse_wridge_incomplete <- 0
+mse_ridge <- 0
+
+mse_GWRR_known <- 0
+mse_GWRR_complete <- 0
+mse_GWRR_incomplete <- 0
+mse_gridge <- 0
+
+mse_wls_known <-0
+mse_wls_complete <-0
+mse_wls_incomplete <-0
+mse_ols <- 0
+
+N_biased=150
+n=30
+################### Covariate value
+x1_biased <- runif(N_biased,0,1)
+
+x2_biased <- 2*x1_biased+rnorm(N_biased,0,0.5)
+
+Sigma <- matrix(0.2,6,6)
+diag(Sigma) <- rep(0.3,6)
+x39_biased <-0.1* mvrnorm(N_biased,c(1,1,1,1,1,1),Sigma)
+x1016_biased <-0.1* mvrnorm(N_biased,c(1,1,1,1,1,1),Sigma)
+
+
+x1_SRS <- runif(n,0,1)
+
+x2_SRS <- 2*x1_SRS+rnorm(n,0,0.5)
+x39_SRS <-0.1* mvrnorm(n,c(1,1,1,1,1,1),Sigma)
+x1016_SRS <-0.1* mvrnorm(n,c(1,1,1,1,1,1),Sigma)
+
+
+x1_test <- runif(100,0,1)
+
+x2_test <- 2*x1_test+rnorm(100,0,0.5)
+x39_test <-0.1* mvrnorm(100,c(1,1,1,1,1,1),Sigma)
+x1016_test <-0.1* mvrnorm(100,c(1,1,1,1,1,1),Sigma)
+
+#############################################
+
+for(i in 1:epoch){
+
+sim_data <- simulate(N_biased,x1_biased,x2_biased,x39_biased,x1016_biased)
+biased_sample <- sim_data[which(sim_data$I_sample==1),]
+
+test_srs <- simulate(n,x1_SRS,x2_SRS,x39_SRS,x1016_SRS)
+test_srs$I_sample=0
+
+
+collected <- rbind(biased_sample,test_srs)
+N=dim(biased_sample)[1]
+
+
+test_srs <- simulate(100,x1_test,x2_test,x39_test,x1016_test)
+
+##### Estimate sampling prob
+model_p_complete <- glm(I_sample~x1+Ia,data=collected,family="binomial")
+model_p_incomplete <- glm(I_sample~x1,data=collected,family="binomial")
+
+p_complete <- as.vector(exp(model.matrix(model_p_complete)%*%coefficients(model_p_complete)))[1:dim(biased_sample)[1]]
+
+p_incomplete <-  as.vector(exp(model.matrix(model_p_incomplete)%*%coefficients(model_p_incomplete)))[1:dim(biased_sample)[1]]
+p_known <- biased_sample$p_sample
+
+
+weight_complete <- 1/p_complete
+weight_complete <- weight_complete/sum(weight_complete)
+
+weight_incomplete <- 1/p_incomplete
+weight_incomplete <- weight_incomplete/sum(weight_incomplete)
+
+weight_known <- 1/p_known
+weight_known <- weight_known/sum(weight_known)
+
+
+###################### Uncomment to test performance on the under-sampled (Section 3.1.2) sub population
+#test_srs <- test_srs[test_srs$Ia==0,] 
+
+####################################################################################################
+######## Weighted Ridge with sampling weights
+####################################################################################################
+
+x <- as.matrix(biased_sample[,c(2,3,6:(dim(biased_sample)[2]-2) )])
+y <- biased_sample[,1]
+
+wridge_known<- glmnet(x,y,alpha=0,family="gaussian",measure="response",weights=weight_known)
+wridge_complete<- glmnet(x,y,alpha=0,family="gaussian",measure="response",weights=weight_complete)
+wridge_incomplete<- glmnet(x,y,alpha=0,family="gaussian",measure="response",weights=weight_incomplete)
+ridge<- glmnet(x,y,alpha=0,family="gaussian",measure="response")
+
+
+
+wridge_known_pre <-predict(wridge_known,
+                           newx=as.matrix(test_srs[,c(2,3,6:(dim(biased_sample)[2]-2) )]),
+                           type="response",
+                           s=cv.glmnet(x,y,alpha=0,family="gaussian",measure="response",weights=weight_known)$lambda.1se) 
+
+wridge_complete_pre <-predict(wridge_known,
+                              newx=as.matrix(test_srs[,c(2,3,6:(dim(biased_sample)[2]-2) )]),
+                              type="response",
+                              s=cv.glmnet(x,y,alpha=0,family="gaussian",measure="response",weights=weight_complete)$lambda.1se) 
+
+wridge_incomplete_pre <-predict(wridge_known,
+                                newx=as.matrix(test_srs[,c(2,3,6:(dim(biased_sample)[2]-2) )]),
+                                type="response",
+                              s=cv.glmnet(x,y,alpha=0,family="gaussian",measure="response",weights=weight_incomplete)$lambda.1se) 
+ridge_pre <-predict(ridge,
+                    newx=as.matrix(test_srs[,c(2,3,6:(dim(biased_sample)[2]-2) )]),
+                    type="response",
+                    s=cv.glmnet(x,y,alpha=0,family="gaussian",measure="response")$lambda.1se)
+
+mse_wridge_known <-mse_wridge_known + sum( (test_srs$y- wridge_known_pre)^2  )/dim(test_srs)[1]
+mse_wridge_complete <-mse_wridge_complete + sum( (test_srs$y- wridge_complete_pre)^2  )/dim(test_srs)[1]
+mse_wridge_incomplete <-mse_wridge_incomplete + sum( (test_srs$y- wridge_incomplete_pre)^2  )/dim(test_srs)[1]
+mse_ridge <-mse_ridge + sum( (test_srs$y- ridge_pre)^2  )/dim(test_srs)[1]
+
+
+####################################################################################################
+######## GWRR
+####################################################################################################
+
+######## Estimate of sample variance
+lm0 <- lm(y~.,weights=weight_known,data=biased_sample[,c(2,3,6:(dim(biased_sample)[2]-2) )])
+sigma0 <- sum( residuals(lm0)^2  )/(dim(biased_sample)[1]-15)
+
+lm1 <- lm(y~.,weights=weight_complete,data=biased_sample[,c(2,3,6:(dim(biased_sample)[2]-2) )])
+sigma1 <- sum( residuals(lm1)^2  )/(dim(biased_sample)[1]-15)
+
+lm2 <- lm(y~.,weights=weight_incomplete,data=biased_sample[,c(2,3,6:(dim(biased_sample)[2]-2) )])
+sigma2 <- sum( residuals(lm2)^2  )/(dim(biased_sample)[1]-15)
+
+######## GWRR estimate
+
+GWRR_known <- GWRR(biased_sample,weight_known,sigma0)
+GWRR_complete <- GWRR(biased_sample,weight_complete,sigma1)
+GWRR_incomplete <- GWRR(biased_sample,weight_incomplete,sigma2)
+gridge <- generalized_ridge(biased_sample,sigma0)
+
+######## GWRR prediction
+GWRR_known_pre <-as.matrix(cbind(rep(1,dim(test_srs)[1]),test_srs[,c(2,3,6:(dim(biased_sample)[2]-2) )]) )%*%GWRR_known
+GWRR_complete_pre <-as.matrix(cbind(rep(1,dim(test_srs)[1]),test_srs[,c(2,3,6:(dim(biased_sample)[2]-2) )]) )%*%GWRR_complete
+GWRR_incomplete_pre <-as.matrix(cbind(rep(1,dim(test_srs)[1]),test_srs[,c(2,3,6:(dim(biased_sample)[2]-2) )]) )%*%GWRR_incomplete
+gridge_pre <-as.matrix(cbind(rep(1,dim(test_srs)[1]),test_srs[,c(2,3,6:(dim(biased_sample)[2]-2) )]) )%*%gridge
+
+
+
+mse_GWRR_known<-mse_GWRR_known + sum((test_srs$y-GWRR_known_pre)^2)/dim(test_srs)[1]
+mse_GWRR_complete <-mse_GWRR_complete +sum((test_srs$y-GWRR_complete_pre)^2)/dim(test_srs)[1]
+mse_GWRR_incomplete <-mse_GWRR_incomplete +sum((test_srs$y-GWRR_incomplete_pre)^2)/dim(test_srs)[1]
+mse_gridge <- mse_gridge+sum((test_srs$y-gridge_pre)^2)/dim(test_srs)[1]
+####################################################################################################
+######## WLS
+####################################################################################################
+wr41 <- coefficients(lm0)
+wr42 <- coefficients(lm1)
+wr43 <- coefficients(lm2)
+wr44 <- coefficients(lm(y~.,data=biased_sample[,c(1,2,3,6:(dim(biased_sample)[2]-2) )]))
+
+
+wpre41 <-as.matrix(cbind(rep(1,dim(test_srs)[1]),test_srs[,c(2,3,6:(dim(biased_sample)[2]-2) )]) )%*%wr41
+wpre42 <-as.matrix(cbind(rep(1,dim(test_srs)[1]),test_srs[,c(2,3,6:(dim(biased_sample)[2]-2) )]) )%*%wr42
+wpre43 <-as.matrix(cbind(rep(1,dim(test_srs)[1]),test_srs[,c(2,3,6:(dim(biased_sample)[2]-2) )]) )%*%wr43
+wpre44 <-as.matrix(cbind(rep(1,dim(test_srs)[1]),test_srs[,c(2,3,6:(dim(biased_sample)[2]-2) )]) )%*%wr44
+
+mse_wls_known <- mse_wls_known+ sum((test_srs$y-wpre41)^2)/dim(test_srs)[1]
+mse_wls_complete <- mse_wls_complete+ sum((test_srs$y-wpre42)^2)/dim(test_srs)[1]
+mse_wls_incomplete <- mse_wls_incomplete+ sum((test_srs$y-wpre43)^2)/dim(test_srs)[1]
+mse_ols <- mse_ols +sum((test_srs$y-wpre44)^2)/dim(test_srs)[1]
+
+print(i)
+
+}
+mse_wridge_known/epoch
+mse_wridge_complete/epoch 
+mse_wridge_incomplete/epoch 
+mse_ridge/epoch
+
+
+mse_GWRR_known/epoch
+mse_GWRR_complete/epoch 
+mse_GWRR_incomplete/epoch
+mse_gridge/epoch 
+
+mse_wls_known/epoch 
+mse_wls_complete/epoch 
+mse_wls_incomplete/epoch 
+mse_ols/epoch
+```
+
+
+
+
+
