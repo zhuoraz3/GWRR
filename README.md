@@ -1,8 +1,9 @@
 # GWRR
-Simulation codes for "Reweighted penalized regression for convenience samples". 
+Simulation Codes for "Reweighted Penalized Regression for Convenience Samples"
 
-Please refer to 
-1. GWRR.rmd for simulations related to the assessment of all predictive performance.
-2. Influence function.rmd for simulation realted to asmptopic behaviors of proposed GWRR estimator. 
+Please refer to the following files:
+
+GWRR.Rmd – Contains simulation codes for assessing and comparing predictive performance.
+influence_function.Rmd – Contains simulation codes related to the asymptotic behavior of the proposed GWRR estimator.
 
 
