@@ -1,5 +1,6 @@
 # GWRR
 Simulation Codes for "Reweighted Penalized Regression for Convenience Samples"
+
 Please refer to the following files:
 
 GWRR.Rmd – Contains simulation codes for assessing and comparing predictive performance.
